@@ -1900,8 +1900,8 @@ external_components:
   #   - source: {type: local, path: esphome/components}
   - source:
       type: git
-      url: https://github.com/xandervanerven/home-assistant-voice-pe
-      ref: main
+      url: https://github.com/TheSeems/home-assistant-voice-pe
+      ref: theseems-1
     components: [va_client]
     refresh: 0s
 
@@ -2093,7 +2093,7 @@ micro_wake_word:
     # removed on purpose. "stop" stays — it's the reliable barge-in/interrupt
     # word, armed only while the assistant is replying (see on_phase below).
     # kahrendt/microWakeWord redirects to the OHF-Voice org automatically.
-    - model: https://github.com/kahrendt/microWakeWord/releases/download/v2.1_models/alexa.json
+    - model: https://github.com/OHF-Voice/micro-wake-word/releases/download/v2.1_models/alexa.json
       id: alexa
     - model: https://github.com/kahrendt/microWakeWord/releases/download/stop/stop.json
       id: stop
