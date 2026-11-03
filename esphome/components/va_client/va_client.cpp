@@ -214,8 +214,11 @@ void VaClient::loop() {
   // Fallback: kSpeakerStopTimeoutMs (3 s). If something wedges and the
   // speaker never reports STOPPED, we still progress so the LED doesn't
   // lock in `replying`.
-  if (this->followup_pending_ && this->audio_fill_ == 0 &&
-      !this->waiting_for_speaker_stop_) {
+  // TheSeems: only once the backend says idle. request_follow_up arrives when the reply's TEXT is done,
+  // while its audio is still coming in bursts; between two bursts audio_fill_ is 0 for a moment, and
+  // the follow-up then opened the mic into the playing question, whose echo cancelled it as "speech".
+  if (this->followup_pending_ && this->audio_fill_ == 0 && !this->waiting_for_speaker_stop_ &&
+      static_cast<Phase>(this->current_phase_.load()) == Phase::IDLE) {
     this->waiting_for_speaker_stop_ = true;
     this->speaker_stop_wait_started_ms_ = millis();
   }
