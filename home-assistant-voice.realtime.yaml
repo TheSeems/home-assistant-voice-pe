@@ -69,7 +69,7 @@ esphome:
   # `version` on a release (merge to main) and adopted devices are offered it.
   project:
     name: "xandervanerven.voice-pe-openai-realtime"
-    version: "1.2.0"
+    version: "1.2.0-theseems.2"
   min_version: 2026.5.0
   on_boot:
     priority: 375
@@ -189,10 +189,14 @@ api:
   # on_client_connected runs once HA + WiFi + the audio path are fully up.
   on_client_connected:
     - micro_wake_word.start:
-    # Keep "stop" disabled in the resting/idle state; on_phase arms it only while
-    # the assistant is replying. Explicit here so the boot state is deterministic
-    # regardless of whether the HA api or the va_client WS connects first.
-    - micro_wake_word.disable_model: stop
+    # TheSeems: "stop" stays LOADED for good and is parked with cutoff 255 at rest
+    # (detection needs sum > cutoff * window and a probability tops out at 255, so
+    # it can never fire). Every enable/disable used to free and re-allocate its
+    # tensor arenas and write a flash preference; with ~49 KB free heap a failed
+    # load returns false from inference, which stops detection for EVERY model,
+    # "alexa" included, until reboot. Arming = setting a real cutoff (128/102).
+    - micro_wake_word.enable_model: stop
+    - lambda: 'id(stop).set_probability_cutoff(255);'
     - script.execute: control_leds
   on_client_disconnected:
     - script.execute: control_leds
@@ -381,8 +385,8 @@ switch:
     internal: true
     restore_mode: ALWAYS_OFF
     on_turn_off:
-      # Disable stop wake word
-      - micro_wake_word.disable_model: stop
+      # Park the stop wake word
+      - lambda: 'id(stop).set_probability_cutoff(255);'  # park "stop" (stays loaded)
       - script.execute: disable_repeat
       # Stop any current announcement (ie: stop the timer ring mid playback)
       - if:
@@ -406,8 +410,7 @@ switch:
           id: media_mixing_input
           decibel_reduction: 20
           duration: 0.0s
-      # Enable stop wake word
-      - micro_wake_word.enable_model: stop
+      # Arm the stop wake word (the cutoff below)
       # B3: a timer ring is loud audio → use the stricter ~0.50 (128), same as a
       # reply (single shared cutoff on id(stop), so set it explicitly here).
       - lambda: 'id(stop).set_probability_cutoff(128);'
@@ -1172,6 +1175,17 @@ power_supply:
     pin: GPIO45
 
 sensor:
+  # TheSeems: heap diagnostics. Free internal heap sat at ~49 KB (stock ~90 KB);
+  # these show whether it shrinks over hours (a leak) or just dips during turns.
+  - platform: debug
+    free:
+      name: "Heap free"
+    block:
+      name: "Heap largest block"
+    min_free:
+      name: "Heap minimum free"
+    psram:
+      name: "PSRAM free"
   # The dial. Used to control volume and Hue of the LED ring.
   - platform: rotary_encoder
     id: dial
@@ -1707,7 +1721,7 @@ script:
               return id(voice_assistant_phase) == ${voice_assist_idle_phase_id} ||
                      id(voice_assistant_phase) == ${voice_assist_listening_for_command_phase_id};
           then:
-            - micro_wake_word.disable_model: stop
+            - lambda: 'id(stop).set_probability_cutoff(255);'  # park "stop" (stays loaded)
             - lambda: id(voice_assistant_phase) = ${voice_assist_idle_phase_id};
             - script.execute: control_leds
 
@@ -1901,7 +1915,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/TheSeems/home-assistant-voice-pe
-      ref: theseems-1
+      ref: theseems-2
     components: [va_client]
     refresh: 0s
 
@@ -1983,7 +1997,6 @@ va_client:
         condition:
           lambda: 'return phase == "replying";'
         then:
-          - micro_wake_word.enable_model: stop
           # B3: TTS is playing → use the stock-default ~0.50 (128) cutoff to
           # reject the common reply-echo false stops (sliding-avg 0.41-0.49)
           # while keeping real reply-stops (0.52-0.67). Dropped to 0.40 in the
@@ -2011,7 +2024,6 @@ va_client:
         condition:
           lambda: 'return phase == "idle";'
         then:
-          - micro_wake_word.enable_model: stop
           # B3: quiet at rest (no TTS) → restore the sensitive 0.40 (102) so weak
           # real stops in the follow-up window are caught.
           - lambda: 'id(stop).set_probability_cutoff(102);'
@@ -2066,7 +2078,6 @@ va_client:
     # their mind ("отмени"/"stop"). on_phase only enables stop during
     # replying — during follow-up listening the server is silent until
     # the user speaks, so we have to enable it ourselves.
-    - micro_wake_word.enable_model: stop
     # B3: the follow-up window is quiet (the question's TTS + chime finished
     # before the mic opens) → sensitive 0.40 (102) to catch weak stops.
     - lambda: 'id(stop).set_probability_cutoff(102);'
@@ -2184,7 +2195,7 @@ micro_wake_word:
                             # (phase is idle, so stop_feedback_flash's closing
                             # control_leds shows idle).
                             - script.execute: stop_feedback_flash
-                            - micro_wake_word.disable_model: stop
+                            - lambda: 'id(stop).set_probability_cutoff(255);'  # park "stop" (stays loaded)
                           else:
                             - logger.log:
                                 format: "ignoring 'stop' — no reply audio yet (phase=%d), nothing to stop"
@@ -2349,3 +2360,23 @@ button:
 
 debug:
   update_interval: 5s
+
+# TheSeems: wake word watchdog. Nothing here stops micro_wake_word on purpose (mute
+# only mutes the mic), so "not running" means its inference task died, and until
+# now the box then stayed deaf until a reboot. start() is a no-op while it runs.
+# Skips the first minute: starting it before the XMOS voice kit streams is the
+# boot race that api.on_client_connected works around.
+interval:
+  - interval: 30s
+    then:
+      - if:
+          condition:
+            and:
+              - lambda: 'return millis() > 60000;'
+              - not:
+                  micro_wake_word.is_running:
+          then:
+            - logger.log:
+                level: WARN
+                format: "wake word wasn't running, starting it again"
+            - micro_wake_word.start:
