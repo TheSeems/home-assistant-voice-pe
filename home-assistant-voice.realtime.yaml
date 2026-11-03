@@ -69,7 +69,7 @@ esphome:
   # `version` on a release (merge to main) and adopted devices are offered it.
   project:
     name: "xandervanerven.voice-pe-openai-realtime"
-    version: "1.2.0-theseems.5"
+    version: "1.2.0-theseems.6"
   min_version: 2026.5.0
   on_boot:
     priority: 375
@@ -1922,7 +1922,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/TheSeems/home-assistant-voice-pe
-      ref: theseems-5
+      ref: theseems-6
     components: [va_client]
     refresh: 0s
 
@@ -2042,17 +2042,6 @@ va_client:
           # real stops in the follow-up window are caught.
           - lambda: 'id(stop).set_probability_cutoff(102);'
           - script.execute: followup_window_watchdog
-  on_repeated_failure:
-    # Backend has been unreachable for N reconnect attempts in a row.
-    # Play the error chime once so the user knows something's wrong —
-    # the LED is already in no_ha_connection (red twinkle) but that's
-    # easy to miss across the room.
-    - script.execute:
-        id: play_sound
-        priority: true
-        # audio_file id is `error_cloud_expired` (no "_sound" suffix),
-        # unlike the other chimes — original yaml inconsistency.
-        sound_file: "error_cloud_expired"
   on_followup_opened:
     # Server's request_follow_up tool fired and va_client has waited
     # for the TTS hardware tail to clear (kTtsTailMs ≈ 800 ms after the
@@ -2280,16 +2269,17 @@ micro_wake_word:
                             # every frame (!ws_connected_), and 7 s later
                             # the no-speech watchdog would close the session
                             # — user has no idea why nothing happened.
-                            # Play the same error chime as on_repeated_failure
-                            # so the failure mode is audible.
+                            # TheSeems: no spoken "cloud unavailable" clip here (or on
+                            # repeated reconnect failures); the red twinkle from
+                            # control_leds_no_ha_connection_state is enough.
                             - if:
                                 condition:
                                   lambda: 'return !id(va)->is_connected();'
                                 then:
-                                  - script.execute:
-                                      id: play_sound
-                                      priority: true
-                                      sound_file: "error_cloud_expired"
+                                  - logger.log:
+                                      level: WARN
+                                      format: "Wake word while the backend is down, ignoring"
+                                  - script.execute: control_leds
                                 else:
                                   # Regular wake word: play wake chime, start a new session.
                                   # Stop the TTS playback chain first. The previous turn may
