@@ -522,6 +522,13 @@ void VaClient::handle_binary_(const uint8_t *data, size_t len) {
   if (this->turn_t_first_audio_out_ == 0 && this->turn_t_wake_ != 0) {
     this->turn_t_first_audio_out_ = now_ms;
   }
+  // TheSeems: reply audio is arriving, so the mic gate closes now, not on phase=replying. During a tool call
+  // the phase is "thinking" while the preamble ("let me check") already plays, and its echo came back as a
+  // user turn ("Thanks."). Barge-in keeps the old behaviour.
+  if (this->streaming_ && !this->barge_in_) {
+    ESP_LOGI(TAG, "reply audio arriving — mic streaming off");
+    this->streaming_ = false;
+  }
   // Detector 1: WS frame inter-arrival jitter. Normal cadence is ~20 ms
   // per frame (OpenAI streams realtime). A gap > kWsGapWarnMs means the
   // bridge stalled, network blip, or OpenAI burst late — anything that
