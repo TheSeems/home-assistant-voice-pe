@@ -69,7 +69,7 @@ esphome:
   # `version` on a release (merge to main) and adopted devices are offered it.
   project:
     name: "xandervanerven.voice-pe-openai-realtime"
-    version: "1.2.0-theseems.6"
+    version: "1.2.0-theseems.7"
   min_version: 2026.5.0
   on_boot:
     priority: 375
@@ -165,6 +165,20 @@ logger:
   level: DEBUG
   logs:
     sensor: WARN  # avoids logging debug sensor updates
+  # TheSeems: keep the scores of the latest wake word detection. micro_wake_word logs them on the main loop
+  # right before it fires on_wake_word_detected, which publishes them to "Last wake word".
+  on_message:
+    level: DEBUG
+    then:
+      - lambda: |-
+          if (strcmp(tag, "micro_wake_word") != 0) return;
+          const char *p = strstr(message, "sliding average probability is ");
+          float avg = 0, mx = 0;
+          if (p != nullptr && sscanf(p, "sliding average probability is %f and max probability is %f", &avg, &mx) == 2) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%.2f/%.2f", avg, mx);
+            id(last_mww_scores) = buf;
+          }
 
 
 ota:
@@ -229,6 +243,14 @@ text_sensor:
         case ${voice_assist_error_phase_id}: return std::string("error");
         default: return std::string("unknown");
       }
+  # TheSeems: every wake word detection with its scores, the phase it came in and whether reply audio had
+  # played this turn (a "stop" only acts then). HA keeps the history, so a misfired or missed "stop" can be
+  # tuned from data. The counter keeps repeats distinct.
+  - platform: template
+    name: "Last wake word"
+    id: last_wake_text
+    update_interval: never
+    entity_category: diagnostic
 
 # va-direct: WiFi provisioning blocks moved out of factory.yaml into the main
 # config since we don't use the upstream two-tier factory build.
@@ -261,6 +283,11 @@ psram:
   ignore_not_found: false  # The VPE has PSRAM, so this is safe. Allows configuring WiFi driver to use more resources (done automatically by the speaker media player)
 
 globals:
+  # TheSeems: "avg/max" of the latest detection, filled by logger.on_message.
+  - id: last_mww_scores
+    type: std::string
+    restore_value: no
+    initial_value: '"?"'
   # Global index for our LEDs. So that switching between different animation does not lead to unwanted effects.
   - id: global_led_animation_index
     type: int
@@ -1922,7 +1949,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/TheSeems/home-assistant-voice-pe
-      ref: theseems-6
+      ref: theseems-7
     components: [va_client]
     refresh: 0s
 
@@ -2148,6 +2175,24 @@ micro_wake_word:
   vad:
     probability_cutoff: 0.3
   on_wake_word_detected:
+    - text_sensor.template.publish:
+        id: last_wake_text
+        state: !lambda |-
+          static uint32_t n = 0;
+          const char *ph = "other";
+          switch (id(voice_assistant_phase)) {
+            case ${voice_assist_idle_phase_id}: ph = "idle"; break;
+            case ${voice_assist_waiting_for_command_phase_id}: ph = "waiting"; break;
+            case ${voice_assist_listening_for_command_phase_id}: ph = "listening"; break;
+            case ${voice_assist_thinking_phase_id}: ph = "thinking"; break;
+            case ${voice_assist_replying_phase_id}: ph = "replying"; break;
+          }
+          char buf[96];
+          snprintf(buf, sizeof(buf), "#%u %s %s %s audio=%d%s", (unsigned) ++n, wake_word.c_str(),
+                   id(last_mww_scores).c_str(), ph, (int) id(va)->turn_has_reply_audio(),
+                   id(master_mute_switch).state ? " muted" : "");
+          id(last_mww_scores) = "?";
+          return std::string(buf);
     # TEMP DEBUG (va-direct): log EVERY detection BEFORE the mute guard, so the
     # next flash's log tells "mWW never fired" (mic/XMOS problem) apart from
     # "fired but swallowed by the mute switch". Remove once wake word is confirmed.
