@@ -69,7 +69,7 @@ esphome:
   # `version` on a release (merge to main) and adopted devices are offered it.
   project:
     name: "xandervanerven.voice-pe-openai-realtime"
-    version: "1.2.0-theseems.2"
+    version: "1.2.0-theseems.3"
   min_version: 2026.5.0
   on_boot:
     priority: 375
@@ -197,6 +197,7 @@ api:
     # "alexa" included, until reboot. Arming = setting a real cutoff (128/102).
     - micro_wake_word.enable_model: stop
     - lambda: 'id(stop).set_probability_cutoff(255);'
+    - lambda: 'id(va)->set_preroll_replay_enabled(!id(wake_sound).state);'
     - script.execute: control_leds
   on_client_disconnected:
     - script.execute: control_leds
@@ -378,6 +379,12 @@ switch:
     entity_category: config
     optimistic: true
     restore_mode: RESTORE_DEFAULT_ON
+    # TheSeems: the pre-roll replay (va_client: preroll_replay_ms) is only clean
+    # without the chime
+    on_turn_on:
+      - lambda: 'id(va)->set_preroll_replay_enabled(false);'
+    on_turn_off:
+      - lambda: 'id(va)->set_preroll_replay_enabled(true);'
   # Internal switch to track when a timer is ringing on the device.
   - platform: template
     id: timer_ringing
@@ -1915,7 +1922,7 @@ external_components:
   - source:
       type: git
       url: https://github.com/TheSeems/home-assistant-voice-pe
-      ref: theseems-2
+      ref: theseems-3
     components: [va_client]
     refresh: 0s
 
@@ -1941,6 +1948,13 @@ va_client:
   url: ${va_url}
   microphone: i2s_mics
   mic_channel: 0
+  # TheSeems: when a wake opens the mic, first send the last 600 ms the mic heard
+  # while it was closed (va_client keeps that ring anyway). "Alexa, what's the
+  # temperature" said in one breath used to lose "what's": detection fires at the
+  # end of the word and the frames right after it were gone. Only with the wake
+  # sound off (the chime would be in the ring; the switch below tracks that) and
+  # when nothing was playing (a reply's echo would be).
+  preroll_replay_ms: 600
   # Handsfree barge-in: keep the mic open while the assistant is speaking so
   # you can talk over it and the backend's server VAD will cut the reply off.
   # Relies on the XMOS AEC to suppress speaker->mic echo (imperfect — see
@@ -2071,6 +2085,13 @@ va_client:
           # mid-response. 800 ms lets the echo decay before the mic opens.
           # (Adopted from upstream maxmaxme 38be9c8, same reasoning verified.)
           - delay: 800ms
+        else:
+          # TheSeems: no chime, but the question's own tail is still coming out of the
+          # speaker: has_buffered_data() goes false ~500 ms before the DAC is quiet,
+          # and the XMOS AEC leaves ~10x of it in the mic. Opening right away let that
+          # tail be the "answer". (The pre-roll isn't replayed on this path for the
+          # same reason.)
+          - delay: 600ms
     - lambda: 'id(va)->commit_followup_mic();'
     - lambda: id(voice_assistant_phase) = ${voice_assist_listening_for_command_phase_id};
     - script.execute: control_leds

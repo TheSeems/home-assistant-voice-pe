@@ -657,7 +657,13 @@ void VaClient::on_mic_data_(const std::vector<uint8_t> &samples) {
   // the flag. Matches marcinnowak79 gemini_proxy's ring_buffer_->reset() on
   // start. Trade-off: a word spoken *during* the chime is lost (the user speaks
   // after the listening ring lights up).
-  if (this->preroll_discard_pending_) {
+  if (this->preroll_replay_pending_) {
+    // TheSeems: a wake with the chime off and nothing playing — the ring holds the end of
+    // the wake word and the first words after it, which the gate dropped until now.
+    this->preroll_replay_pending_ = false;
+    this->preroll_discard_pending_ = false;
+    this->preroll_replay_(handle);
+  } else if (this->preroll_discard_pending_) {
     this->preroll_discard_pending_ = false;
     this->preroll_count_ = 0;
     this->preroll_head_ = 0;
@@ -669,6 +675,32 @@ void VaClient::on_mic_data_(const std::vector<uint8_t> &samples) {
   esp_websocket_client_send_bin(handle, reinterpret_cast<const char *>(this->mono_buf_.data()),
                                 static_cast<int>(this->mono_buf_.size() * sizeof(int16_t)),
                                 10 / portTICK_PERIOD_MS);
+}
+
+void VaClient::preroll_replay_(void *ws_handle) {
+  auto handle = static_cast<esp_websocket_client_handle_t>(ws_handle);
+  const size_t cap = this->preroll_capacity_samples_;
+  const size_t want = (size_t) this->preroll_replay_ms_ * (kMicSampleRate / 1000);
+  const size_t n = std::min(this->preroll_count_, want);
+  if (cap != 0 && n != 0) {
+    // The newest n samples end at the write head, so they start n behind it.
+    size_t idx = (this->preroll_head_ + cap - n) % cap;
+    size_t sent = 0, dropped = 0;
+    while (sent < n) {
+      size_t chunk = std::min(kPreRollChunkSamples, n - sent);
+      chunk = std::min(chunk, cap - idx);  // never wrap inside one frame
+      int r = esp_websocket_client_send_bin(handle, reinterpret_cast<const char *>(this->preroll_buf_ + idx),
+                                            static_cast<int>(chunk * sizeof(int16_t)), 50 / portTICK_PERIOD_MS);
+      if (r < 0)
+        dropped++;
+      sent += chunk;
+      idx = (idx + chunk) % cap;
+    }
+    ESP_LOGI(TAG, "pre-roll: replayed %u ms heard before the mic opened%s", (unsigned) (n / (kMicSampleRate / 1000)),
+             dropped ? " (some frames dropped)" : "");
+  }
+  this->preroll_count_ = 0;
+  this->preroll_head_ = 0;
 }
 
 void VaClient::preroll_push_(const int16_t *data, size_t n) {
@@ -971,7 +1003,16 @@ void VaClient::start_session() {
   // caught the wake chime leaking through the mic during the chime/tail-delay
   // window; replaying it fed the chime back to OpenAI as a phantom "Au!". The
   // mic task does the actual ring reset (its sole owner) when it sees this flag.
-  this->preroll_discard_pending_ = true;
+  // TheSeems: replay instead when it's clean — chime off (the yaml tracks the switch)
+  // and nothing was playing. A wake that cut a reply short has that reply's echo in
+  // the ring, so it keeps the old discard.
+  if (this->preroll_replay_enabled_ && this->preroll_replay_ms_ > 0 && !residual_reply) {
+    this->preroll_replay_pending_ = true;
+    this->preroll_discard_pending_ = false;
+  } else {
+    this->preroll_discard_pending_ = true;
+    this->preroll_replay_pending_ = false;
+  }
   ESP_LOGI(TAG, "start_session() — streaming on");
   this->streaming_ = true;
   // Tell the backend a fresh wake started (dangling-VAD guard, A). Sent AFTER

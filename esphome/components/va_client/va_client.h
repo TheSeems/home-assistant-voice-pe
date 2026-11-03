@@ -34,6 +34,12 @@ class VaClient : public Component {
   // speaks). Relies on the XMOS AEC to suppress speaker→mic echo; see the
   // ~10x leak caveat in CLAUDE.md.
   void set_barge_in(bool v) { barge_in_ = v; }
+  // TheSeems: how much of the mic pre-roll ring to send when a wake opens the mic
+  // (0 = discard it, the upstream behaviour). Replayed only while enabled (the
+  // yaml turns it off with the wake sound: the chime would be in the ring) and
+  // when no reply audio was playing (its echo would be).
+  void set_preroll_replay_ms(uint32_t ms) { preroll_replay_ms_ = ms; }
+  void set_preroll_replay_enabled(bool v) { preroll_replay_enabled_ = v; }
   // Sets the output-volume multiplier applied to TTS in handle_binary_.
   // Driven from yaml by external_media_player's volume / mute state so the
   // device's physical +/- buttons and mute switch scale our TTS the same
@@ -103,6 +109,8 @@ class VaClient : public Component {
   // ring while the session is closed; the ring is DISCARDED (not replayed) on
   // session open — see preroll_discard_pending_.
   void preroll_push_(const int16_t *data, size_t n);
+  // Sends the newest preroll_replay_ms_ of the ring (oldest first) and empties it.
+  void preroll_replay_(void *ws_handle);
   void handle_text_(const char *data, size_t len);
   void handle_binary_(const uint8_t *data, size_t len);
   void set_phase_(const std::string &phase);
@@ -177,7 +185,11 @@ class VaClient : public Component {
   // preroll_discard_pending_ is set by start_session()/commit_followup_mic()
   // (main loop) and consumed by the mic task: a plain bool like streaming_.
   static constexpr uint32_t kMicSampleRate = 16000;  // i2s_mics rate (16 samples/ms)
-  static constexpr uint32_t kPreRollMs = 600;
+  static constexpr uint32_t kPreRollMs = 1000;
+  static constexpr size_t kPreRollChunkSamples = 480;  // 30 ms per WS frame on replay
+  uint32_t preroll_replay_ms_{0};
+  bool preroll_replay_enabled_{true};
+  bool preroll_replay_pending_{false};
   int16_t *preroll_buf_{nullptr};
   size_t preroll_capacity_samples_{0};
   size_t preroll_head_{0};   // next write index
